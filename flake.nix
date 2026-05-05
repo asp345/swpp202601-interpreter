@@ -19,9 +19,9 @@
         system:
         let
           pkgs = mkPkgs system;
-          mkInterpreter =
+          mkRustPackage = rustPlatform:
             { enableLog ? false }:
-            pkgs.rustPlatform.buildRustPackage {
+            rustPlatform.buildRustPackage {
               pname = if enableLog then "swpp-interpreter-log" else "swpp-interpreter";
               version = "0.1.0";
               src = lib.cleanSource ./.;
@@ -37,9 +37,15 @@
                 platforms = platforms.linux;
               };
             };
+          mkInterpreter =
+            mkRustPackage pkgs.rustPlatform;
+          mkStaticInterpreter =
+            mkRustPackage pkgs.pkgsStatic.rustPlatform;
         in {
           default = mkInterpreter { };
           log = mkInterpreter { enableLog = true; };
+          static = mkStaticInterpreter { };
+          log-static = mkStaticInterpreter { enableLog = true; };
         }
       );
 
