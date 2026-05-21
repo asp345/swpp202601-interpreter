@@ -12,7 +12,7 @@ use crate::{
     BASIC_COST_CONTROL_BRANCH_TRUE, BASIC_COST_CONTROL_FNCALL, BASIC_COST_CONTROL_RET,
     BASIC_COST_CONTROL_SWITCH, BASIC_COST_CONTROL_UBRANCH, BASIC_COST_MEM_HEAP_OP,
     FORWARD_BRANCH_COST_MULTIPLIER, HEAP_OFFSET, ICMP, MEMORY_ACCESS_COST_HEAP,
-    MEMORY_ACCESS_COST_STACK, MEM_STACK_SIZE,
+    MEMORY_ACCESS_COST_STACK, MEM_STACK_MAX_ADDR, MEM_STACK_MIN_ADDR,
   },
   error::{SwppError, SwppErrorKind, SwppRawResult, SwppResult},
   logger::SwppLogger,
@@ -30,6 +30,14 @@ fn is_forward_jump(state: &mut SwppState, target_block: &str) -> SwppRawResult<b
   let current_block_num = state.get_block_index(&fname, &current_block)?;
   let target_block_num = state.get_block_index(&fname, target_block)?;
   Ok(target_block_num > current_block_num)
+}
+
+fn is_stack_addr(addr: u64) -> bool {
+  MEM_STACK_MIN_ADDR <= addr && addr < MEM_STACK_MAX_ADDR
+}
+
+fn is_heap_addr(addr: u64) -> bool {
+  addr >= HEAP_OFFSET
 }
 
 /// General form of instruction
@@ -63,7 +71,6 @@ impl SwppInst {
       cost,
       four_phobia_args,
       four_phobia_size,
-      None,
       exclude_sectors,
       true,
     );
@@ -87,13 +94,12 @@ impl SwppInst {
       cost,
       four_phobia_args,
       four_phobia_size,
-      None,
       exclude_sectors,
       false,
     );
   }
 
-  fn finalize_instruction_preserving_aload_debt<L: SwppLogger>(
+  fn finalize_aload_instruction<L: SwppLogger>(
     &self,
     state: &mut SwppState,
     logger: &mut L,
@@ -102,7 +108,8 @@ impl SwppInst {
     cost: u64,
     four_phobia_args: &[&Arg],
     four_phobia_size: Option<AccessSize>,
-    preserved_reg: &SwppRegisterName,
+    target_reg: &SwppRegisterName,
+    resolution_cost: u64,
     exclude_sectors: Option<&[u64]>,
   ) {
     self.finalize_instruction_inner(
@@ -113,10 +120,10 @@ impl SwppInst {
       cost,
       four_phobia_args,
       four_phobia_size,
-      Some(preserved_reg),
       exclude_sectors,
       true,
     );
+    state.create_aload_ready_at(target_reg.clone(), resolution_cost);
   }
 
   fn finalize_instruction_inner<L: SwppLogger>(
@@ -128,7 +135,6 @@ impl SwppInst {
     cost: u64,
     four_phobia_args: &[&Arg],
     four_phobia_size: Option<AccessSize>,
-    exclude_reg: Option<&SwppRegisterName>,
     exclude_sectors: Option<&[u64]>,
     log_base_cost: bool,
   ) {
@@ -148,7 +154,6 @@ impl SwppInst {
     let elapsed_cost = cost + extra_cost;
     state.add_cost(cost);
     state.cool_down(elapsed_cost, exclude_sectors);
-    state.resolve_aload_debts(elapsed_cost, exclude_reg);
     if log_base_cost {
       logger.log(
         self.loc,
@@ -226,14 +231,24 @@ impl SwppInst {
         let next_block = sw
           .run(state, reg_set)
           .map_err(|err| SwppError::new(err, self.loc))?;
-        let cost = BASIC_COST_CONTROL_SWITCH;
+        let cost =
+          if is_forward_jump(state, &next_block).map_err(|err| SwppError::new(err, self.loc))? {
+            scaled_forward_branch_cost(BASIC_COST_CONTROL_SWITCH)
+          } else {
+            BASIC_COST_CONTROL_SWITCH
+          };
+        let case_four_phobia = sw.jump_map.contains_key(&4).then_some(Arg::Const(4));
+        let mut four_phobia_args = vec![&sw.cond_reg];
+        if let Some(arg) = &case_four_phobia {
+          four_phobia_args.push(arg);
+        }
         self.finalize_instruction(
           state,
           logger,
           &inst_name,
           &inst_name,
           cost,
-          &[&sw.cond_reg],
+          &four_phobia_args,
           None,
           None,
         );
@@ -338,10 +353,10 @@ impl SwppInst {
         Ok(None)
       }
       SwppInstKind::ALoad(aload) => {
-        let (cost, affected_sectors) = aload
+        let (cost, affected_sectors, resolution_cost) = aload
           .run(state, reg_set)
           .map_err(|err| SwppError::new(err, self.loc))?;
-        self.finalize_instruction_preserving_aload_debt(
+        self.finalize_aload_instruction(
           state,
           logger,
           &inst_name,
@@ -350,6 +365,7 @@ impl SwppInst {
           &[&aload.addr_reg],
           Some(aload.size),
           &aload.target_reg,
+          resolution_cost,
           Some(&affected_sectors),
         );
         Ok(None)
@@ -834,7 +850,7 @@ impl InstHeapAllocation {
 
     let addr = state.malloc(size_u64)?;
 
-    state.write_register_with_debt(reg_set, &self.target_reg, addr)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, addr)
   }
 }
 
@@ -876,12 +892,12 @@ impl InstLoad {
     if addr % size != 0 {
       return Err(SwppErrorKind::InvalidAlignment(addr, size));
     }
-    let (val, base_cost) = if addr <= MEM_STACK_SIZE {
+    let (val, base_cost) = if is_stack_addr(addr) {
       (
         state.read_from_stack(addr, self.size)?,
         MEMORY_ACCESS_COST_STACK,
       )
-    } else if addr >= HEAP_OFFSET {
+    } else if is_heap_addr(addr) {
       (
         state.read_from_heap(addr, self.size)?,
         MEMORY_ACCESS_COST_HEAP,
@@ -891,7 +907,7 @@ impl InstLoad {
     };
 
     // Calculate heat cost
-    let (heat_cost, affected_sectors) = if addr <= MEM_STACK_SIZE {
+    let (heat_cost, affected_sectors) = if is_stack_addr(addr) {
       state.cost_stack(addr, self.size)
     } else {
       state.cost_heap(addr, self.size)
@@ -899,7 +915,7 @@ impl InstLoad {
 
     let total_cost = base_cost + heat_cost;
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)?;
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)?;
 
     Ok((total_cost, affected_sectors))
   }
@@ -928,10 +944,10 @@ impl InstStore {
       return Err(SwppErrorKind::InvalidAlignment(addr, size));
     }
 
-    let base_cost = if addr <= MEM_STACK_SIZE {
+    let base_cost = if is_stack_addr(addr) {
       state.write_to_stack(addr, val, self.size)?;
       MEMORY_ACCESS_COST_STACK
-    } else if addr >= HEAP_OFFSET {
+    } else if is_heap_addr(addr) {
       state.write_to_heap(addr, val, self.size)?;
       MEMORY_ACCESS_COST_HEAP
     } else {
@@ -939,7 +955,7 @@ impl InstStore {
     };
 
     // Calculate heat cost
-    let (heat_cost, affected_sectors) = if addr <= MEM_STACK_SIZE {
+    let (heat_cost, affected_sectors) = if is_stack_addr(addr) {
       state.cost_stack(addr, self.size)
     } else {
       state.cost_heap(addr, self.size)
@@ -964,7 +980,7 @@ impl InstAsyncLoad {
     &self,
     state: &mut SwppState,
     reg_set: &mut SwppRegisterSet,
-  ) -> SwppRawResult<(u64, Vec<u64>)> {
+  ) -> SwppRawResult<(u64, Vec<u64>, u64)> {
     if self.target_reg.is_arg() {
       return Err(SwppErrorKind::ArgRegAssign(self.target_reg.clone()));
     }
@@ -975,34 +991,31 @@ impl InstAsyncLoad {
     if addr % size != 0 {
       return Err(SwppErrorKind::InvalidAlignment(addr, size));
     }
-    let val = if addr <= MEM_STACK_SIZE {
+    let val = if is_stack_addr(addr) {
       state.read_from_stack(addr, self.size)?
-    } else if addr >= HEAP_OFFSET {
+    } else if is_heap_addr(addr) {
       state.read_from_heap(addr, self.size)?
     } else {
       return Err(SwppErrorKind::InvalidAddr(addr));
     };
 
     // Calculate heat cost and get affected sectors
-    let (heat_cost, affected_sectors) = if addr <= MEM_STACK_SIZE {
+    let (heat_cost, affected_sectors) = if is_stack_addr(addr) {
       state.cost_stack(addr, self.size)
     } else {
       state.cost_heap(addr, self.size)
     };
 
-    // Async load base cost is always 1, but creates debt
+    // Async load base cost is always 1, but creates deferred readiness.
     let base_cost = 1;
-    let debt = if addr <= MEM_STACK_SIZE { 36 } else { 60 };
+    let resolution_cost = if is_stack_addr(addr) { 36 } else { 60 };
 
     let total_cost = base_cost + heat_cost;
 
-    // Overwriting the target should clear any previous outstanding debt first.
-    state.write_register_with_debt(reg_set, &self.target_reg, val)?;
+    // Overwriting the target should clear any previous async-load readiness first.
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)?;
 
-    // Then register the async-load debt for the newly written value.
-    state.create_aload_debt(self.target_reg.clone(), debt);
-
-    Ok((total_cost, affected_sectors))
+    Ok((total_cost, affected_sectors, resolution_cost))
   }
 }
 
@@ -1025,7 +1038,7 @@ impl InstUnsignedDivision {
       .read_u64(self.reg2.read_value_with_state(state, reg_set)?);
     let val = self.bw.read_u64(val1 / val2);
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 
@@ -1051,7 +1064,7 @@ impl InstSignedDivision {
 
     let val = val as u64;
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 
@@ -1075,7 +1088,7 @@ impl InstUnsignedRemainder {
 
     let val = self.bw.read_u64(val1 % val2);
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 /// Signed Remainder
@@ -1100,7 +1113,7 @@ impl InstSignedRemainder {
 
     let val = val as u64;
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 
@@ -1124,7 +1137,7 @@ impl InstMultiplication {
 
     let val = self.bw.read_u64(val1.wrapping_mul(val2));
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 
@@ -1147,7 +1160,7 @@ impl InstShiftLeft {
 
     let val = self.bw.read_u64(val1 << val2);
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 
@@ -1170,7 +1183,7 @@ impl InstShiftRightLogical {
 
     let val = self.bw.read_u64(val1 >> val2);
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 
@@ -1193,7 +1206,7 @@ impl InstShiftRightArithmetic {
 
     let val = self.bw.read_i64(val1 >> val2);
     let val = val as u64;
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 
@@ -1214,7 +1227,7 @@ impl InstBitwiseAnd {
       .bw
       .read_u64(self.reg2.read_value_with_state(state, reg_set)?);
 
-    state.write_register_with_debt(reg_set, &self.target_reg, self.bw.read_u64(val1 & val2))
+    state.write_register_clearing_aload(reg_set, &self.target_reg, self.bw.read_u64(val1 & val2))
   }
 }
 
@@ -1235,7 +1248,7 @@ impl InstBitwiseOr {
       .bw
       .read_u64(self.reg2.read_value_with_state(state, reg_set)?);
 
-    state.write_register_with_debt(reg_set, &self.target_reg, self.bw.read_u64(val1 | val2))
+    state.write_register_clearing_aload(reg_set, &self.target_reg, self.bw.read_u64(val1 | val2))
   }
 }
 
@@ -1256,7 +1269,7 @@ impl InstBitwiseXor {
       .bw
       .read_u64(self.reg2.read_value_with_state(state, reg_set)?);
 
-    state.write_register_with_debt(reg_set, &self.target_reg, self.bw.read_u64(val1 ^ val2))
+    state.write_register_clearing_aload(reg_set, &self.target_reg, self.bw.read_u64(val1 ^ val2))
   }
 }
 
@@ -1284,7 +1297,7 @@ impl InstEAdd {
       BASIC_COST_ARITH_INT_ADDSUB_WRONG
     };
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)?;
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)?;
 
     Ok(cost)
   }
@@ -1314,7 +1327,7 @@ impl InstOAdd {
       BASIC_COST_ARITH_INT_ADDSUB_WRONG
     };
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)?;
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)?;
 
     Ok(cost)
   }
@@ -1344,7 +1357,7 @@ impl InstESub {
       BASIC_COST_ARITH_INT_ADDSUB_WRONG
     };
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)?;
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)?;
 
     Ok(cost)
   }
@@ -1374,7 +1387,7 @@ impl InstOSub {
       BASIC_COST_ARITH_INT_ADDSUB_WRONG
     };
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)?;
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)?;
 
     Ok(cost)
   }
@@ -1426,7 +1439,7 @@ impl InstComparison {
       }
     };
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 
@@ -1448,7 +1461,7 @@ impl InstTernary {
       _ => return Err(SwppErrorKind::InvalidCondVal(cond)),
     };
 
-    state.write_register_with_debt(reg_set, &self.target_reg, val)
+    state.write_register_clearing_aload(reg_set, &self.target_reg, val)
   }
 }
 

@@ -2,8 +2,8 @@
 ; instruction cost should both resolve every outstanding async-load debt.
 start main 0:
 .entry:
-r1 = aload 1 0
-r2 = aload 1 1
+r1 = aload 1 1600
+r2 = aload 1 1601
 r3 = mul 2 3 64
 r4 = xor 0 0 64
 call write r2

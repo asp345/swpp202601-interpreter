@@ -1,11 +1,11 @@
-use crate::{common::MEM_STACK_SIZE, error::SwppRawResult};
+use crate::{common::MEM_STACK_MAX_ADDR, error::SwppRawResult};
 
 /// This struct represents the local state of register
 #[derive(Debug, Clone)]
 pub struct SwppRegisterSet {
   /// 32 64-bit general registers
   general: [u64; 32],
-  /// stack pointer (set to MEM_STACK_SIZE at the beginning of the program)
+  /// stack pointer (set to MEM_STACK_MAX_ADDR at the beginning of the program)
   sp: u64,
   /// 16 argument registers
   arg: [u64; 16],
@@ -15,7 +15,7 @@ impl Default for SwppRegisterSet {
   fn default() -> Self {
     Self {
       general: Default::default(),
-      sp: MEM_STACK_SIZE,
+      sp: MEM_STACK_MAX_ADDR,
       arg: Default::default(),
     }
   }

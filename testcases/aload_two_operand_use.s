@@ -2,8 +2,8 @@
 ; only for the remaining parallel debt, not for each debt independently.
 start main 0:
 .entry:
-r1 = aload 1 0
-r2 = aload 1 1
+r1 = aload 1 1600
+r2 = aload 1 1601
 r3 = eadd r1 r2 64
 call write r3
 ret 0

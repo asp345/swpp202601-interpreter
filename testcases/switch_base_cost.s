@@ -1,4 +1,4 @@
-; Switch should keep base cost 60 and should not use forward-jump scaling.
+; Switch should use forward-jump scaling like br.
 start main 0:
 .entry:
 switch 0 1 .case .default

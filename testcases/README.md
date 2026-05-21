@@ -20,7 +20,9 @@ To also collect per-test interpreter logs under `logs/`, run:
 | --- | --- | --- | --- |
 | `call_basic_return.s` | Basic argument passing and return-value assignment. | `8` | `72` |
 | `call_cost_before_callee.s` | Verifies that call cost is charged in the caller before the callee starts running. | `0` | `8445` |
+| `call_deep_aload_same_register.s` | Verifies the same register name can carry frame-local `aload` debt through more than five active call frames. | `0` repeated 7 times | `440` |
 | `call_deep_chain_flattened.s` | Verifies a deeper nested call chain runs through the interpreter's explicit runtime call stack instead of recursive host-language calls. | `123` | `1023` |
+| `call_preserves_caller_aload_debt.s` | Verifies a callee write to the same register name does not cancel the caller's unresolved `aload` debt. | `0` | `8434` |
 | `call_recursive_stress_5000.s` | Stress test for real recursion depth; performs 5000 self-recursive calls and should still run safely with the flattened interpreter call stack. | `5000` | `545200` |
 | `call_restore_args_nested.s` | Verifies nested calls do not permanently overwrite the caller's `arg*` registers. | `7` | `93` |
 | `call_restore_registers.s` | Verifies `r*` and `sp` are restored after the callee returns. | `5` | `92` |
@@ -34,7 +36,8 @@ To also collect per-test interpreter logs under `logs/`, run:
 | `branch_forward_cond_false.s` | Verifies a forward false branch uses `30 * 1.5 = 45`. | *(empty)* | `56` |
 | `branch_forward_cond_true.s` | Verifies a forward true branch uses `90 * 1.5 = 135`. | *(empty)* | `146` |
 | `branch_forward_unconditional.s` | Verifies a forward unconditional branch uses `30 * 1.5 = 45`. | *(empty)* | `46` |
-| `switch_base_cost.s` | Verifies `switch` stays at base cost `60` and is not forward-jump scaled. | *(empty)* | `61` |
+| `switch_base_cost.s` | Verifies a forward `switch` target uses `60 * 1.5 = 90`. | *(empty)* | `91` |
+| `switch_case_four_phobia.s` | Verifies a `switch` case constant equal to `4` triggers 4-phobia even when `<val_cond>` is not `4`. | *(empty)* | `116` |
 
 ## Async Load / Debt Tests
 
@@ -75,8 +78,9 @@ To also collect per-test interpreter logs under `logs/`, run:
 | `fma_cancels_remainder_cost.s` | Verifies `rem` followed immediately by add/sub also uses the FMA optimization path and cancels the remainder base cost. | `0` | `41` |
 | `fma_preserves_mul_four_phobia.s` | Verifies FMA cancels only the multiplication base cost; a 4-phobia surcharge paid by the `mul` instruction must remain. | `14` | `51` |
 | `four_phobia_basic.s` | Basic 4-phobia cost check on ordinary `<val>` operands. | `5` | `51` |
-| `four_phobia_once_with_size.s` | Verifies `<sz>=4` also triggers 4-phobia, but only one surcharge is paid even when another `4` appears in the same instruction. | `0` | `71` |
+| `four_phobia_once_with_size.s` | Verifies `<sz>=4` also triggers 4-phobia for a valid stack load. | `0` | `71` |
 | `four_phobia_once_with_two_values.s` | Verifies two separate `<val>` operands equal to `4` still trigger only one 4-phobia charge for the instruction. | `8` | `51` |
+| `icmp_signed_i1.s` | Verifies signed comparison between two i1 operands are equivalent to comparison between 0 and -1. | `1` | `34` |
 | `signed_ashr_sign_extend_bw8.s` | Verifies `ashr` sign-extends narrow signed inputs before shifting. | `255` | `41` |
 | `stdin_sum_to_n.s` | End-to-end stdin-driven loop test using `stdin_sum_to_n.in`; its total cost includes forward-jump penalties, and `eadd 4 4 64` now pays 4-phobia only once. | `55` | `9933` |
 

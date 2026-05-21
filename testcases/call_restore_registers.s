@@ -5,7 +5,7 @@ start main 0:
 r3 = oadd 2 3 64
 call clobber
 assert_eq r3 5
-assert_eq sp 102400
+assert_eq sp 104000
 call write r3
 ret 0
 end main

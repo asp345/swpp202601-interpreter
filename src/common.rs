@@ -1,3 +1,5 @@
+use std::ops::Neg;
+
 use crate::{
   error::SwppRawResult,
   logger::SwppLogger,
@@ -6,12 +8,14 @@ use crate::{
 };
 
 pub const MEM_STACK_SIZE: u64 = 102400;
+pub const MEM_STACK_MIN_ADDR: u64 = 1600;
+pub const MEM_STACK_MAX_ADDR: u64 = MEM_STACK_MIN_ADDR + MEM_STACK_SIZE;
 pub const MAIN_NAME: &str = "main";
 pub const INTERNAL_ERROR_MSG: &str =
   "Internal Logic Error. If students find this bug, please tell TAs.";
 pub const HEAP_OFFSET: u64 = 204800;
 pub const MAX_HEAP_SIZE: u64 = u64::MAX - HEAP_OFFSET;
-pub const NULL_ADDR: u64 = 153600;
+pub const NULL_ADDR: u64 = 0;
 
 // Memory access costs
 pub const MEMORY_ACCESS_COST_STACK: u64 = 30;
@@ -177,93 +181,98 @@ pub enum ICMP {
 }
 
 impl ICMP {
-  pub fn compare_u64(&self, rhs: u64, lhs: u64) -> bool {
-    let rhs_s: i64 = rhs as i64;
-    let lhs_s: i64 = lhs as i64;
+  pub fn compare_u64(&self, lhs: u64, rhs: u64) -> bool {
+    let lhs_s = lhs as i64;
+    let rhs_s = rhs as i64;
 
     match self {
-      ICMP::Eq => rhs == lhs,
-      ICMP::Ne => rhs != lhs,
-      ICMP::Ugt => rhs > lhs,
-      ICMP::Uge => rhs >= lhs,
-      ICMP::Ult => rhs < lhs,
-      ICMP::Ule => rhs <= lhs,
-      ICMP::Sgt => rhs_s > lhs_s,
-      ICMP::Sge => rhs_s >= lhs_s,
-      ICMP::Slt => rhs_s < lhs_s,
-      ICMP::Sle => rhs_s <= lhs_s,
+      ICMP::Eq => lhs == rhs,
+      ICMP::Ne => lhs != rhs,
+      ICMP::Ugt => lhs > rhs,
+      ICMP::Uge => lhs >= rhs,
+      ICMP::Ult => lhs < rhs,
+      ICMP::Ule => lhs <= rhs,
+      ICMP::Sgt => lhs_s > rhs_s,
+      ICMP::Sge => lhs_s >= rhs_s,
+      ICMP::Slt => lhs_s < rhs_s,
+      ICMP::Sle => lhs_s <= rhs_s,
     }
   }
 
-  pub fn compare_u32(&self, rhs: u32, lhs: u32) -> bool {
-    let rhs_s: i32 = rhs as i32;
-    let lhs_s: i32 = lhs as i32;
+  pub fn compare_u32(&self, lhs: u32, rhs: u32) -> bool {
+    let lhs_s = lhs as i32;
+    let rhs_s = rhs as i32;
 
     match self {
-      ICMP::Eq => rhs == lhs,
-      ICMP::Ne => rhs != lhs,
-      ICMP::Ugt => rhs > lhs,
-      ICMP::Uge => rhs >= lhs,
-      ICMP::Ult => rhs < lhs,
-      ICMP::Ule => rhs <= lhs,
-      ICMP::Sgt => rhs_s > lhs_s,
-      ICMP::Sge => rhs_s >= lhs_s,
-      ICMP::Slt => rhs_s < lhs_s,
-      ICMP::Sle => rhs_s <= lhs_s,
+      ICMP::Eq => lhs == rhs,
+      ICMP::Ne => lhs != rhs,
+      ICMP::Ugt => lhs > rhs,
+      ICMP::Uge => lhs >= rhs,
+      ICMP::Ult => lhs < rhs,
+      ICMP::Ule => lhs <= rhs,
+      ICMP::Sgt => lhs_s > rhs_s,
+      ICMP::Sge => lhs_s >= rhs_s,
+      ICMP::Slt => lhs_s < rhs_s,
+      ICMP::Sle => lhs_s <= rhs_s,
     }
   }
 
-  pub fn compare_u16(&self, rhs: u16, lhs: u16) -> bool {
-    let rhs_s: i16 = rhs as i16;
-    let lhs_s: i16 = lhs as i16;
+  pub fn compare_u16(&self, lhs: u16, rhs: u16) -> bool {
+    let lhs_s = lhs as i16;
+    let rhs_s = rhs as i16;
 
     match self {
-      ICMP::Eq => rhs == lhs,
-      ICMP::Ne => rhs != lhs,
-      ICMP::Ugt => rhs > lhs,
-      ICMP::Uge => rhs >= lhs,
-      ICMP::Ult => rhs < lhs,
-      ICMP::Ule => rhs <= lhs,
-      ICMP::Sgt => rhs_s > lhs_s,
-      ICMP::Sge => rhs_s >= lhs_s,
-      ICMP::Slt => rhs_s < lhs_s,
-      ICMP::Sle => rhs_s <= lhs_s,
+      ICMP::Eq => lhs == rhs,
+      ICMP::Ne => lhs != rhs,
+      ICMP::Ugt => lhs > rhs,
+      ICMP::Uge => lhs >= rhs,
+      ICMP::Ult => lhs < rhs,
+      ICMP::Ule => lhs <= rhs,
+      ICMP::Sgt => lhs_s > rhs_s,
+      ICMP::Sge => lhs_s >= rhs_s,
+      ICMP::Slt => lhs_s < rhs_s,
+      ICMP::Sle => lhs_s <= rhs_s,
     }
   }
 
-  pub fn compare_u8(&self, rhs: u8, lhs: u8) -> bool {
-    let rhs_s: i8 = rhs as i8;
-    let lhs_s: i8 = lhs as i8;
+  pub fn compare_u8(&self, lhs: u8, rhs: u8) -> bool {
+    let lhs_s = lhs as i8;
+    let rhs_s = rhs as i8;
 
     match self {
-      ICMP::Eq => rhs == lhs,
-      ICMP::Ne => rhs != lhs,
-      ICMP::Ugt => rhs > lhs,
-      ICMP::Uge => rhs >= lhs,
-      ICMP::Ult => rhs < lhs,
-      ICMP::Ule => rhs <= lhs,
-      ICMP::Sgt => rhs_s > lhs_s,
-      ICMP::Sge => rhs_s >= lhs_s,
-      ICMP::Slt => rhs_s < lhs_s,
-      ICMP::Sle => rhs_s <= lhs_s,
+      ICMP::Eq => lhs == rhs,
+      ICMP::Ne => lhs != rhs,
+      ICMP::Ugt => lhs > rhs,
+      ICMP::Uge => lhs >= rhs,
+      ICMP::Ult => lhs < rhs,
+      ICMP::Ule => lhs <= rhs,
+      ICMP::Sgt => lhs_s > rhs_s,
+      ICMP::Sge => lhs_s >= rhs_s,
+      ICMP::Slt => lhs_s < rhs_s,
+      ICMP::Sle => lhs_s <= rhs_s,
     }
   }
 
-  pub fn compare_bit(&self, rhs: bool, lhs: bool) -> bool {
-    let rhs = rhs as u8;
+  pub fn compare_bit(&self, lhs: bool, rhs: bool) -> bool {
+    // in LLVM, i1 is equivalent to -1 in signed comparison context
+    // but in Rust, converting bool to integer is always 0 (false) or 1 (true)
+    // so, flip the sign after conversion 
+    let lhs_s = (lhs as i8).neg();
+    let rhs_s = (rhs as i8).neg();
     let lhs = lhs as u8;
+    let rhs = rhs as u8;
 
     match self {
-      ICMP::Eq => rhs == lhs,
-      ICMP::Ne => rhs != lhs,
-      ICMP::Ugt => rhs > lhs,
-      ICMP::Uge => rhs >= lhs,
-      ICMP::Ult => rhs < lhs,
-      ICMP::Ule => rhs <= lhs,
-      ICMP::Sgt => rhs > lhs,
-      ICMP::Sge => rhs >= lhs,
-      ICMP::Slt => rhs < lhs,
-      ICMP::Sle => rhs <= lhs,
+      ICMP::Eq => lhs == rhs,
+      ICMP::Ne => lhs != rhs,
+      ICMP::Ugt => lhs > rhs,
+      ICMP::Uge => lhs >= rhs,
+      ICMP::Ult => lhs < rhs,
+      ICMP::Ule => lhs <= rhs,
+      ICMP::Sgt => lhs_s > rhs_s,
+      ICMP::Sge => lhs_s >= rhs_s,
+      ICMP::Slt => lhs_s < rhs_s,
+      ICMP::Sle => lhs_s <= rhs_s,
     }
   }
 }
@@ -308,7 +317,7 @@ impl Arg {
     reg_set: &SwppRegisterSet,
   ) -> SwppRawResult<u64> {
     match self {
-      Arg::Reg(reg) => state.read_register_with_debt(reg_set, reg),
+      Arg::Reg(reg) => state.read_register_with_aload_wait(reg_set, reg),
       Arg::Const(val) => Ok(*val),
     }
   }

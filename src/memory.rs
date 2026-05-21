@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, ops::Bound};
 
 use crate::{
-  common::{AccessSize, HEAP_OFFSET, MAX_HEAP_SIZE, MEM_STACK_SIZE, NULL_ADDR},
+  common::{AccessSize, HEAP_OFFSET, MAX_HEAP_SIZE, MEM_STACK_MIN_ADDR, MEM_STACK_SIZE, NULL_ADDR},
   error::{SwppErrorKind, SwppRawResult},
 };
 
@@ -21,6 +21,13 @@ pub struct SwppMemory {
 }
 
 impl SwppMemory {
+  fn stack_internal_addr(addr: u64) -> SwppRawResult<usize> {
+    let internal_addr = addr
+      .checked_sub(MEM_STACK_MIN_ADDR)
+      .ok_or(SwppErrorKind::InvalidAddr(addr))?;
+    usize::try_from(internal_addr).map_err(|_| SwppErrorKind::InvalidAddr(addr))
+  }
+
   pub fn get_max_heap_size(&self) -> u64 {
     self.heap.max_size
   }
@@ -60,11 +67,12 @@ impl SwppMemory {
 
   pub fn read_from_stack(&self, addr: u64, size: AccessSize) -> SwppRawResult<u64> {
     let mut byte_arr = [0; 8];
+    let internal_addr = Self::stack_internal_addr(addr)?;
 
     for i in 0..size.into() {
       byte_arr[i] = self
         .stack
-        .get(addr as usize + i)
+        .get(internal_addr as usize + i)
         .ok_or(SwppErrorKind::InvalidAddr(addr as u64))?
         .to_owned();
     }
@@ -73,11 +81,12 @@ impl SwppMemory {
 
   pub fn write_to_stack(&mut self, addr: u64, val: u64, size: AccessSize) -> SwppRawResult<()> {
     let val_bytes = val.to_le_bytes();
+    let internal_addr = Self::stack_internal_addr(addr)?;
 
     for i in 0..size.into() {
       let target_mem = self
         .stack
-        .get_mut(addr as usize + i)
+        .get_mut(internal_addr as usize + i)
         .ok_or(SwppErrorKind::InvalidAddr(addr as u64))?;
       *target_mem = val_bytes[i];
     }

@@ -49,8 +49,13 @@ pub struct SwppState {
   functions: HashMap<String, SwppFunction>,
   /// Current execution context, which contains the name of function and block currently being executed.
   cur_context: SwppContext,
-  /// Outstanding async load debts: register -> debt amount.
-  aload_debts: HashMap<SwppRegisterName, u64>,
+  /// Async-load ready-at costs for each active call frame.
+  ///
+  /// Register values are saved/restored per call frame, so readiness attached
+  /// to those values must be frame-local too. The stored cost is absolute in
+  /// the global execution timeline, so async loads keep progressing while a
+  /// callee is running without updating every frame on every instruction.
+  aload_ready_at_frames: Vec<HashMap<SwppRegisterName, u64>>,
   /// Deferred mul/div/rem cost that may be canceled by the immediately following add/sub.
   pending_fma_cost: Option<PendingFmaCost>,
 }
@@ -85,7 +90,7 @@ impl SwppState {
         fname: "main".to_owned(),
         bname: "entry".to_owned(),
       },
-      aload_debts: HashMap::new(),
+      aload_ready_at_frames: vec![HashMap::new()],
       pending_fma_cost: None,
     }
   }
@@ -136,7 +141,6 @@ impl SwppState {
 
     self.add_cost(BASIC_COST_ARITH_INT_MULDIV);
     self.cool_down(BASIC_COST_ARITH_INT_MULDIV, None);
-    self.resolve_aload_debts(BASIC_COST_ARITH_INT_MULDIV, None);
     logger.log(
       pending_inst.loc,
       &pending_inst.inst_name,
@@ -195,78 +199,81 @@ impl SwppState {
     self.mem.cool_down(instruction_cost, exclude_sectors);
   }
 
-  /// Create an async load debt for a register
-  pub fn create_aload_debt(&mut self, reg: SwppRegisterName, debt: u64) {
-    self.aload_debts.insert(reg, debt);
+  fn current_aload_ready_at(&self) -> &HashMap<SwppRegisterName, u64> {
+    self
+      .aload_ready_at_frames
+      .last()
+      .expect("there should always be an active aload ready-at frame")
   }
 
-  /// Get the debt amount for a register (0 if no debt)
-  pub fn get_aload_debt(&self, reg: &SwppRegisterName) -> u64 {
-    self.aload_debts.get(reg).copied().unwrap_or(0)
+  fn current_aload_ready_at_mut(&mut self) -> &mut HashMap<SwppRegisterName, u64> {
+    self
+      .aload_ready_at_frames
+      .last_mut()
+      .expect("there should always be an active aload ready-at frame")
   }
 
-  /// Resolve debt using instruction cost (returns amount actually resolved)
-  pub fn resolve_aload_debt(&mut self, reg: &SwppRegisterName, available_cost: u64) -> u64 {
-    if let Some(debt) = self.aload_debts.get_mut(reg) {
-      let resolved = available_cost.min(*debt);
-      *debt -= resolved;
-      if *debt == 0 {
-        self.aload_debts.remove(reg);
-      }
-      resolved
-    } else {
-      0
-    }
+  /// Create the callee's ready-at frame from the caller's currently visible async loads.
+  pub fn push_aload_ready_at_frame(&mut self) {
+    let callee_ready_at = self.current_aload_ready_at().clone();
+    self.aload_ready_at_frames.push(callee_ready_at);
   }
 
-  /// Pay back outstanding debt for a register (when it's used before resolution)
-  pub fn pay_aload_debt(&mut self, reg: &SwppRegisterName) -> u64 {
-    self.aload_debts.remove(reg).unwrap_or(0)
+  /// Drop the callee's ready-at frame and resume the caller's frame.
+  pub fn pop_aload_ready_at_frame(&mut self) {
+    assert!(
+      self.aload_ready_at_frames.len() > 1,
+      "cannot pop the main aload ready-at frame"
+    );
+    self.aload_ready_at_frames.pop();
   }
 
-  /// Cancel debt for a register (when it's overwritten)
-  pub fn cancel_aload_debt(&mut self, reg: &SwppRegisterName) {
-    self.aload_debts.remove(reg);
+  /// Mark a register as ready after the given async-load resolution cost.
+  pub fn create_aload_ready_at(&mut self, reg: SwppRegisterName, resolution_cost: u64) {
+    let ready_at = self.cur_cost + resolution_cost;
+    self.current_aload_ready_at_mut().insert(reg, ready_at);
   }
 
-  /// Resolve async load debts using elapsed instruction cost, excluding the
-  /// freshly-created async-load result when needed.
-  pub fn resolve_aload_debts(
-    &mut self,
-    instruction_cost: u64,
-    exclude_reg: Option<&SwppRegisterName>,
-  ) {
-    if instruction_cost == 0 {
-      return;
-    }
-
-    self.aload_debts.retain(|reg, debt| {
-      if exclude_reg.map_or(false, |exclude| reg == exclude) {
-        true
-      } else {
-        *debt = debt.saturating_sub(instruction_cost);
-        *debt > 0
-      }
-    });
+  /// Get the current-frame remaining wait for a register (0 if ready or no async load).
+  pub fn get_aload_remaining_cost(&self, reg: &SwppRegisterName) -> u64 {
+    let cur_cost = self.cur_cost;
+    self
+      .current_aload_ready_at()
+      .get(reg)
+      .copied()
+      .map_or(0, |ready_at| ready_at.saturating_sub(cur_cost))
   }
 
-  /// Read from register, paying back any outstanding debt
-  pub fn read_register_with_debt(
+  /// Pay back current-frame outstanding wait for a register.
+  pub fn pay_aload_wait(&mut self, reg: &SwppRegisterName) -> u64 {
+    let cur_cost = self.cur_cost;
+    self
+      .current_aload_ready_at_mut()
+      .remove(reg)
+      .map_or(0, |ready_at| ready_at.saturating_sub(cur_cost))
+  }
+
+  /// Cancel current-frame async-load readiness for a register (when it's overwritten).
+  pub fn cancel_aload_ready_at(&mut self, reg: &SwppRegisterName) {
+    self.current_aload_ready_at_mut().remove(reg);
+  }
+
+  /// Read from register, paying back any outstanding async-load wait.
+  pub fn read_register_with_aload_wait(
     &mut self,
     reg_set: &SwppRegisterSet,
     reg: &SwppRegisterName,
   ) -> SwppRawResult<u64> {
-    let debt = self.pay_aload_debt(reg);
-    if debt > 0 {
-      self.add_cost(debt);
-      self.cool_down(debt, None);
-      self.resolve_aload_debts(debt, None);
+    let wait_cost = self.pay_aload_wait(reg);
+    if wait_cost > 0 {
+      self.add_cost(wait_cost);
+      self.cool_down(wait_cost, None);
     }
     reg_set.read_register_word(reg)
   }
 
-  /// Write to register, canceling any outstanding debt
-  pub fn write_register_with_debt(
+  /// Write to register, canceling any outstanding async-load readiness.
+  pub fn write_register_clearing_aload(
     &mut self,
     reg_set: &mut SwppRegisterSet,
     reg: &SwppRegisterName,
@@ -275,7 +282,7 @@ impl SwppState {
     if reg.is_arg() {
       return Err(crate::error::SwppErrorKind::ArgRegAssign(reg.clone()));
     }
-    self.cancel_aload_debt(reg);
+    self.cancel_aload_ready_at(reg);
     reg_set.write_register_word(reg, val)
   }
 }
@@ -443,6 +450,7 @@ impl<'a, L: SwppLogger> SwppProgram<L> {
           let finished_frame = call_stack.pop().expect("call stack should not be empty");
 
           if let Some(call_site) = finished_frame.call_site {
+            self.state.pop_aload_ready_at_frame();
             let caller = call_stack
               .last_mut()
               .expect("callee frame should always have a caller");
@@ -452,7 +460,7 @@ impl<'a, L: SwppLogger> SwppProgram<L> {
                 if let Err(err) =
                   self
                     .state
-                    .write_register_with_debt(&mut caller.reg_set, &target, val)
+                    .write_register_clearing_aload(&mut caller.reg_set, &target, val)
                 {
                   return Err(
                     self.wrap_call_stack_error(SwppError::new(err, call_site.loc), &call_stack),
@@ -486,6 +494,7 @@ impl<'a, L: SwppLogger> SwppProgram<L> {
               Some(call_site),
             )
             .map_err(|err| SwppError::new(err, call_request.loc))?;
+          self.state.push_aload_ready_at_frame();
           self.logger.enter_fn();
           call_stack.push(callee_frame);
         }
